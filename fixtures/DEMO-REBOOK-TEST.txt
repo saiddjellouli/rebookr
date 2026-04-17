@@ -1,0 +1,37 @@
+Calend'Air — démo minimale « annulation → créneau libéré → rebook »
+================================================================
+
+Fichier CSV : fixtures/demo-rebook-planning.csv
+ • Remplacez 2026-04-06 par la date de DEMAIN (AAAA-MM-JJ) dans votre fuseau, ou gardez-la si c’est bien demain.
+  • Utilisez des e-mails que vous pouvez lire (Resend) ou adaptez les adresses.
+
+Étapes
+------
+1) Connexion tableau de bord → Importer mon planning → envoyer ce CSV.
+
+2) Inscrire Bob sur la liste d’attente (sinon aucun e-mail rebook) :
+   POST /api/organizations/<ORG_ID>/waitlist
+   Authorization: Bearer <token>
+   JSON : { "patientId": "<UUID du patient Bob après import>" }
+   (UUID : Prisma Studio → table Patient, e-mail bob.demo.calendair@example.com)
+
+3) Relances J-1 / H-3   • Les liens Confirmer / Annuler sont créés quand une relance part (cron10 min).
+   • J-1 : RDV dans ~22–26 h (vérif fuseau Organization.timezone).
+   • H-3 : RDV dans ~2 h30 à 3 h 30 ; le RDV passe en AT_RISK à l’envoi H-3.
+   • Sans RESEND_API_KEY : pas d’e-mail (voir logs). Avec clé : vérifiez la boîte alice.demo…
+
+4) Démo « Alice ne viendra pas » (deux équivalents métier)
+   A) Patient annule : ouvrir le lien ANNULER du mail Alice.
+   B) No-show constaté au cabinet : POST /api/organizations/<ORG_ID>/appointments/<RDV_ALICE_ID>/no-show
+      (Bearer JWT) → même effet : FreeSlot + e-mails rebook à la liste d’attente (Bob).
+   → Création / réutilisation du FreeSlot + e-mails aux entrées waitlist.
+
+5) Bob accepte le rebook
+   Ouvrir le lien dans l’e-mail Bob → page « Réservation confirmée ».
+   → Nouveau RDV PENDING sur le créneau libéré ; entrée waitlist Bob désactivée.
+
+Test plus rapide (même jour, fenêtre H-3)
+----------------------------------------
+Dans le CSV, pour Alice seulement : mettez la DATE d’aujourd’hui et une HEURE
+environ 3 h après l’heure locale actuelle (ex. il est 14 h → mettez 17 h15).
+Relancez le cron ou attendez 10 min après être entré dans la fenêtre H-3.
