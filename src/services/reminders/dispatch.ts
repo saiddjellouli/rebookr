@@ -139,6 +139,34 @@ export async function dispatchReminders(now = new Date()): Promise<DispatchResul
       continue;
     }
 
+    // Planning importé tard : fenêtre T-24h déjà passée mais RDV encore dans le futur
+    if (!t24done && h < 23 && h > 0) {
+      const urls = await replaceActionTokensForAppointment({
+        appointmentId: fresh.id,
+        startsAt: fresh.startsAt,
+      });
+      const { subject, html } = buildReminderEmail({
+        kind: "T24",
+        organizationName: fresh.organization.name,
+        patientName: fresh.patient!.name,
+        title: fresh.title,
+        startsAt: fresh.startsAt,
+        timezone: tz,
+        confirmUrl: urls.confirmUrl,
+        cancelUrl: urls.cancelUrl,
+      });
+      await sendHtmlEmail({ to: email, subject, html });
+      await prisma.appointment.update({
+        where: { id: fresh.id },
+        data: {
+          reminderT24SentAt: now,
+          reminderJ1SentAt: now,
+        },
+      });
+      t24++;
+      continue;
+    }
+
     if (!t24done) continue;
 
     if (!t6done && h <= 7 && h >= 0.25) {

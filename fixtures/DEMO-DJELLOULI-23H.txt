@@ -1,0 +1,28 @@
+Démo 18h → RDV 23h (patient 1) + rebook (patient 2)
+===============================================
+
+Fichier : fixtures/demo-djellouli-23h-rebook.csv
+
+AVANT import : ouvre le CSV et mets :
+ • Ligne Said23h : DATE = aujourd’hui (AAAA-MM-JJ), heure 23:00
+ • Ligne Said 4h   : DATE = demain matin (AAAA-MM-JJ), heure 04:00
+   (ex. si tu es le 5 avril 2026 à 18h : 2026-04-05 / 2026-04-06)
+
+1) Dashboard → Importer ce CSV (ou POST /imports/csv).
+
+2) Liste d’attente pour le patient 2 (e-mail djelloulisaid225…), avec son UUID Patient :
+   POST /api/organizations/<ORG_ID>/waitlist
+   Authorization: Bearer <token>
+   JSON : { "patientId": "<uuid patient ligne 2>" }
+   (UUID : Prisma Studio → Patient où email = djelloulisaid225@gmail.com)
+
+3) Resend + PUBLIC_APP_URL OK → laisse tourner le cron (10 min) ou POST /api/internal/run-reminders
+   pour faire avancer T-24 (ou rattrapage si import moins de 23 h avant le RDV), T-6, T-3, T-1 jusqu’au créneau 23h.
+
+4) « Ne se présente pas » patient 1 :
+   • soit lien Annuler dans l’e-mail,
+   • soit POST .../appointments/<id_rdv_patient1>/no-show (JWT).
+
+5) Patient 2 reçoit l’e-mail rebook → ouvre le lien → accepte (créneau libéré = celui de 23h).
+
+Note : le patient 2 a aussi un RDV à 4h du matin dans le CSV ; après rebook il aura en plus le créneau pris à 23h (démo OK, à nettoyer en base si besoin).
