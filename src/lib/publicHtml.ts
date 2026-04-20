@@ -8,8 +8,9 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-export function htmlPage(params: { title: string; message: string; ok: boolean }): string {
+export function htmlPage(params: { title: string; message: string; ok: boolean; extraBodyHtml?: string }): string {
   const accent = params.ok ? "#16A34A" : "#DC2626";
+  const extra = params.extraBodyHtml ?? "";
   return `<!DOCTYPE html>
 <html lang="fr">
 <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${escapeHtml(params.title)}</title></head>
@@ -18,6 +19,7 @@ export function htmlPage(params: { title: string; message: string; ok: boolean }
     <p style="margin:0 0 8px;color:#2563EB;font-weight:700;">${escapeHtml(PRODUCT_NAME)}</p>
     <h1 style="margin:0 0 16px;font-size:1.25rem;color:${accent};">${escapeHtml(params.title)}</h1>
     <p style="margin:0;color:#374151;line-height:1.5;">${escapeHtml(params.message)}</p>
+    ${extra}
   </div>
 </body>
 </html>`;

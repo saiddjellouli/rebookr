@@ -195,6 +195,7 @@ export async function dispatchReminders(now = new Date()): Promise<DispatchResul
       }).catch(() => {});
 
       const score = clampScore(fresh.confirmationScore - 30);
+      const becameAtRisk = fresh.status === "PENDING";
       await prisma.appointment.update({
         where: { id: fresh.id },
         data: {
@@ -203,6 +204,12 @@ export async function dispatchReminders(now = new Date()): Promise<DispatchResul
           confirmationScore: score,
         },
       });
+      if (becameAtRisk) {
+        const { broadcastPoolHotInviteForAtRiskAppointment } = await import("../pool/atRiskBroadcast.js");
+        broadcastPoolHotInviteForAtRiskAppointment(fresh.id).catch((err) => {
+          console.error("[dispatchReminders] broadcastPoolHotInviteForAtRiskAppointment", err);
+        });
+      }
       t6++;
       continue;
     }

@@ -1,9 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import bcrypt from "bcryptjs";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { env } from "../config.js";
 import { prisma } from "../lib/prisma.js";
 import { requireJwt } from "../auth/preHandlers.js";
+import { INBOUND_EMAIL_SALES_COPY } from "../product.js";
 import {
   issueRefreshToken,
   revokeRefreshToken,
@@ -196,6 +198,25 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     if (!user) {
       return reply.code(401).send({ error: "USER_NOT_FOUND" });
     }
+
+    let inboundEmailToken = user.organization.inboundEmailToken;
+    if (!inboundEmailToken?.trim()) {
+      try {
+        const repaired = await prisma.organization.update({
+          where: { id: user.organizationId },
+          data: { inboundEmailToken: randomUUID() },
+        });
+        inboundEmailToken = repaired.inboundEmailToken;
+      } catch (err) {
+        request.log.error({ err }, "inboundEmailToken repair failed (migrations appliquées ?)");
+        return reply.code(503).send({
+          error: "INBOUND_EMAIL_NOT_READY",
+          hint: "Exécutez npx prisma migrate deploy sur cette base, puis npx prisma generate (serveur arrêté si EPERM).",
+        });
+      }
+    }
+
+    const base = env.PUBLIC_APP_URL.replace(/\/$/, "");
     return reply.send({
       user: {
         id: user.id,
@@ -209,7 +230,16 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         slug: user.organization.slug,
         timezone: user.organization.timezone,
         sessionPriceCents: user.organization.sessionPriceCents,
+        inboundEmailToken,
+        inboundEmailEnabled: user.organization.inboundEmailEnabled,
       },
+      integrations: {
+        inboundEmail: {
+          enabled: user.organization.inboundEmailEnabled,
+          webhookUrl: `${base}/api/inbound/email/${inboundEmailToken}`,
+        },
+      },
+      copy: { inboundEmail: INBOUND_EMAIL_SALES_COPY },
     });
   });
 };

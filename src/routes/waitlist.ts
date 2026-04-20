@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { syncPoolFromWaitlist } from "../services/pool/patientPool.js";
 
 const orgIdSchema = z.string().uuid();
 
@@ -66,6 +67,8 @@ export const waitlistRoutes: FastifyPluginAsync = async (app) => {
           active: true,
         },
       });
+
+      await syncPoolFromWaitlist({ organizationId: org.id, patientId, active: true });
 
       return reply.code(201).send({ id: entry.id, patientId });
     },

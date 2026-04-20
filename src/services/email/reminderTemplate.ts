@@ -10,7 +10,7 @@ export function buildReminderEmail(params: {
   title: string;
   startsAt: Date;
   timezone: string;
-  confirmUrl: string;
+   confirmUrl: string;
   cancelUrl: string;
 }): { subject: string; html: string } {
   const start = DateTime.fromJSDate(params.startsAt, { zone: "utc" }).setZone(params.timezone);

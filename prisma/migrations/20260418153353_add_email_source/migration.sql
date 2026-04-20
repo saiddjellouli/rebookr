@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "PatientPoolEntry_organizationId_wantsEarlierSlot_isOnWaitingLis" RENAME TO "PatientPoolEntry_organizationId_wantsEarlierSlot_isOnWaitin_idx";

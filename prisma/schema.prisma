@@ -26,22 +26,55 @@ enum AppointmentStatus {
   COMPLETED
 }
 
-/// MVP : CSV + image + manuel ; Google Calendar = phase optionnelle
+/// MVP : CSV + image + manuel ; Google Calendar = phase optionnelle ; flux e-mail (transfert / parsing)
 enum AppointmentSource {
   CSV
   IMAGE
   MANUAL
   GOOGLE_CALENDAR
+  EMAIL_FORWARD
+}
+
+/// Résultat du traitement d’un e-mail entrant (Doctolib / transfert praticien).
+enum InboundEmailOutcome {
+  FILTERED_OUT_NOT_DOCTOLIB
+  UNKNOWN_INTENT
+  NO_PATIENT_MATCH
+  NO_APPOINTMENT_MATCH
+  DUPLICATE_SKIPPED
+  CONFIRMED
+  CANCELLED
+  /// Nouveau cas : l’e-mail Doctolib a servi à créer un Patient + Appointment (source=EMAIL_FORWARD).
+  CREATED
+  ERROR
 }
 
 enum ActionTokenPurpose {
   CONFIRM
   CANCEL
   REBOOK
+  /// Conservé si la base a déjà cette valeur (anciennes migrations) — ne plus émettre côté app.
+  HOT_SLOT_OPT_IN
+}
+
+/// Invitations pool (post-confirmation, priorité J de risque) — pas liées à un ActionToken RDV.
+enum PoolInvitePurpose {
+  WANTS_EARLIER_SLOT
+  HOT_PRIORITY
 }
 
 enum CalendarProvider {
   GOOGLE
+}
+
+/// Dernière origine connue de mise à jour « planning » (démo / prod partagent la même logique).
+enum PlanningUpdateSource {
+  EMAIL
+  IMPORT
+  MANUAL
+  PATIENT_LINK
+  DEMO
+  SYSTEM
 }
 
 model Organization {
@@ -62,6 +95,12 @@ model Organization {
   freeSlots                    FreeSlot[]
   dailyReportLogs              DailyReportLog[]
   planningImportReminderLogs   PlanningImportReminderLog[]
+  patientPoolEntries         PatientPoolEntry[]
+  poolInviteTokens           PoolInviteToken[]
+  /// Jeton opaque pour POST /api/inbound/email/:token (transfert automatique des accusés patient)
+  inboundEmailToken          String                    @unique @default(uuid())
+  inboundEmailEnabled        Boolean                   @default(true)
+  inboundEmailEvents         InboundEmailEvent[]
 }
 
 /// Un e-mail « pensez à importer le planning de demain » par org et par jour d’envoi (fuseau org)
@@ -127,15 +166,26 @@ model Patient {
   email          String?
   phone          String?
   name           String?
+  /// Patient ouvert à des horaires alternatifs (info cabinet, optionnel)
+  flexible              Boolean   @default(false)
+  /// Liste chaude : a accepté d’être prioritaire si un créneau se libère
+  interestedFastSlot    Boolean   @default(false)
+  fastSlotOptInAt       DateTime?
+  fastSlotChannel       String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   appointments    Appointment[]
   waitlistEntries WaitlistEntry[]
+  rebookOffersHot RebookingOffer[] @relation("RebookHotPatient")
+  patientPoolEntries   PatientPoolEntry[]
+  poolInviteTokens     PoolInviteToken[]
+  inboundEmailMatches InboundEmailEvent[] @relation("InboundEmailPatient")
 
   @@index([organizationId])
   @@index([organizationId, email])
+  @@index([organizationId, interestedFastSlot])
 }
 
 model CalendarConnection {
@@ -185,8 +235,15 @@ model Appointment {
   /// T-1h : dernière tentative + no-show probable + créneau offert liste d’attente
   reminderT1SentAt   DateTime?
   preventiveRebookOfferedAt DateTime?
+  /// Mail « rejoindre le pool » envoyé après création via forward Doctolib (idempotence cron)
+  poolOptInEmailSentAt      DateTime?
   /// Score confirmation (+ confirm, − silences / relances)
   confirmationScore  Int               @default(0)
+  /// Score de risque no-show affiché (0 = faible, 100 = élevé), recalculé par le moteur async.
+  riskScore Int                   @default(50)
+  /// Nombre de signaux explicites de confirmation reçus (e-mail, clic patient, etc.).
+  confirmationSignalCount      Int                   @default(0)
+  planningLastUpdateSource     PlanningUpdateSource?
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
@@ -194,11 +251,78 @@ model Appointment {
   patient         Patient?     @relation(fields: [patientId], references: [id], onDelete: SetNull)
   actionTokens    ActionToken[]
   freeSlotCreated FreeSlot?    @relation("CreatedFromAppointment")
+  rebookOffersAsSuccessor RebookingOffer[] @relation("RebookSuccessorAppointment")
+  inboundEmailMatches     InboundEmailEvent[] @relation("InboundEmailAppointment")
 
   @@index([organizationId, startsAt])
   @@index([organizationId, status])
   @@index([organizationId, importBatchId])
   @@index([externalEventId])
+  @@index([organizationId, poolOptInEmailSentAt])
+}
+
+/// Pool de rebooking : planning = détection ; pool = demande active (spec architecture finale).
+model PatientPoolEntry {
+  id String    @id @default(uuid())
+  organizationId         String
+  patientId              String
+  wantsEarlierSlot       Boolean   @default(false)
+  isOnWaitingList        Boolean   @default(false)
+  hasFutureAppointment   Boolean   @default(false)
+  isHot                  Boolean   @default(false)
+  poolHotExpiresAt       DateTime?
+  lastInteractionAt      DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  patient      Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, patientId])
+  @@index([organizationId, isHot])
+  @@index([organizationId, wantsEarlierSlot, isOnWaitingList])
+}
+
+/// Trace des e-mails entrants (transfert praticien → webhook). Filtrage Doctolib + intentions confirm / annul.
+model InboundEmailEvent {
+  id               String              @id @default(uuid())
+  organizationId   String
+  messageId        String?
+  fromAddress      String?
+  toAddress        String?
+  subject          String?
+  bodyPreview      String              @db.Text
+  outcome          InboundEmailOutcome
+  matchedPatientId String?
+  matchedAppointmentId String?
+  detail           String?             @db.Text
+  createdAt        DateTime            @default(now())
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  matchedPatient   Patient?     @relation("InboundEmailPatient", fields: [matchedPatientId], references: [id], onDelete: SetNull)
+  matchedAppointment Appointment? @relation("InboundEmailAppointment", fields: [matchedAppointmentId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, messageId])
+  @@index([organizationId, createdAt])
+}
+
+model PoolInviteToken {
+  id                     String           @id @default(uuid())
+  organizationId         String
+  patientId              String
+  purpose                PoolInvitePurpose
+  tokenHash              String           @unique
+  expiresAt              DateTime
+  usedAt                 DateTime?
+  /// RDV « à risque » ayant déclenché une invite HOT_PRIORITY (audit / contexte)
+  relatedAppointmentId   String?
+  createdAt              DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  patient      Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([patientId])
 }
 
 model ActionToken {
@@ -252,19 +376,29 @@ model WaitlistEntry {
 }
 
 model RebookingOffer {
-  id              String    @id @default(uuid())
-  freeSlotId      String
-  waitlistEntryId String
-  sentAt          DateTime?
-  claimedAt       DateTime?
+  id                  String    @id @default(uuid())
+  freeSlotId          String
+  /// Discriminant stable : `w:…` | `a:…` | `p:<patientId>` (liste chaude)
+  recipientKey        String
+  waitlistEntryId     String?
+  /// RDV déjà confirmé plus tard : accepter = décaler ce RDV sur le créneau libéré
+  targetAppointmentId String?
+  /// Liste chaude sans RDV cible : accepter = nouveau RDV sur le créneau
+  targetPatientId     String?
+  sentAt              DateTime?
+  claimedAt           DateTime?
   /// Hachage du jeton brut (lien « Réserver en 1 clic »)
-  tokenHash       String?   @unique
-  expiresAt       DateTime?
-  createdAt       DateTime  @default(now())
+  tokenHash           String?   @unique
+  expiresAt           DateTime?
+  createdAt           DateTime  @default(now())
 
-  freeSlot      FreeSlot      @relation(fields: [freeSlotId], references: [id], onDelete: Cascade)
-  waitlistEntry WaitlistEntry @relation(fields: [waitlistEntryId], references: [id], onDelete: Cascade)
+  freeSlot          FreeSlot       @relation(fields: [freeSlotId], references: [id], onDelete: Cascade)
+  waitlistEntry     WaitlistEntry? @relation(fields: [waitlistEntryId], references: [id], onDelete: Cascade)
+  targetAppointment Appointment?   @relation("RebookSuccessorAppointment", fields: [targetAppointmentId], references: [id], onDelete: Cascade)
+  targetPatient     Patient?       @relation("RebookHotPatient", fields: [targetPatientId], references: [id], onDelete: Cascade)
 
-  @@unique([freeSlotId, waitlistEntryId])
+  @@unique([freeSlotId, recipientKey])
   @@index([freeSlotId])
+  @@index([targetAppointmentId])
+  @@index([targetPatientId])
 }

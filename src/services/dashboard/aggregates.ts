@@ -79,7 +79,10 @@ export async function getDashboardSummary(
 
 export type TimeseriesPoint = {
   day: string;
+  /** Confirmations enregistrées ce jour-là (`confirmedAt`, fuseau org). */
   confirmed: number;
+  /** RDV au statut CONFIRMED dont le début (`startsAt`) tombe ce jour-là (fuseau org). */
+  confirmedSlotDay: number;
   cancelled: number;
   rebooked: number;
 };
@@ -105,9 +108,12 @@ export async function getDashboardTimeseries(
     const to = dayEnd.toUTC().toJSDate();
     const day = dayStart.toFormat("yyyy-MM-dd");
 
-    const [confirmed, cancelled, rebooked] = await Promise.all([
+    const [confirmed, confirmedSlotDay, cancelled, rebooked] = await Promise.all([
       prisma.appointment.count({
         where: { organizationId, confirmedAt: { gte: from, lte: to } },
+      }),
+      prisma.appointment.count({
+        where: { organizationId, status: "CONFIRMED", startsAt: { gte: from, lte: to } },
       }),
       prisma.appointment.count({
         where: { organizationId, cancelledAt: { gte: from, lte: to } },
@@ -120,7 +126,7 @@ export async function getDashboardTimeseries(
       }),
     ]);
 
-    out.push({ day, confirmed, cancelled, rebooked });
+    out.push({ day, confirmed, confirmedSlotDay, cancelled, rebooked });
   }
 
   return out;
@@ -149,9 +155,12 @@ export async function getDashboardTimeseriesInRange(
     const t = dayEnd.toUTC().toJSDate();
     const day = cursor.toFormat("yyyy-MM-dd");
 
-    const [confirmed, cancelled, rebooked] = await Promise.all([
+    const [confirmed, confirmedSlotDay, cancelled, rebooked] = await Promise.all([
       prisma.appointment.count({
         where: { organizationId, confirmedAt: { gte: f, lte: t } },
+      }),
+      prisma.appointment.count({
+        where: { organizationId, status: "CONFIRMED", startsAt: { gte: f, lte: t } },
       }),
       prisma.appointment.count({
         where: { organizationId, cancelledAt: { gte: f, lte: t } },
@@ -164,7 +173,7 @@ export async function getDashboardTimeseriesInRange(
       }),
     ]);
 
-    out.push({ day, confirmed, cancelled, rebooked });
+    out.push({ day, confirmed, confirmedSlotDay, cancelled, rebooked });
     cursor = cursor.plus({ days: 1 });
   }
 
@@ -188,10 +197,22 @@ export async function getDashboardEvents(
 
   const inPeriod = from != null && to != null;
 
-  const confirmWhere = {
-    organizationId,
-    confirmedAt: inPeriod ? { gte: from, lte: to } : { not: null },
-  };
+  const confirmWhere = inPeriod
+    ? {
+        organizationId,
+        OR: [
+          { confirmedAt: { gte: from, lte: to } },
+          {
+            status: "CONFIRMED" as const,
+            confirmedAt: { not: null },
+            startsAt: { gte: from, lte: to },
+          },
+        ],
+      }
+    : {
+        organizationId,
+        confirmedAt: { not: null },
+      };
 
   const cancelWhere = {
     organizationId,
@@ -223,6 +244,8 @@ export async function getDashboardEvents(
       include: {
         freeSlot: true,
         waitlistEntry: { include: { patient: true } },
+        targetAppointment: { include: { patient: true } },
+        targetPatient: true,
       },
     }),
   ]);
@@ -246,11 +269,17 @@ export async function getDashboardEvents(
     });
   }
   for (const r of rebooks) {
-    const p = r.waitlistEntry.patient;
+    const p = r.waitlistEntry?.patient ?? r.targetAppointment?.patient ?? r.targetPatient;
+    const title =
+      r.targetPatientId && !r.waitlistEntryId && !r.targetAppointmentId
+        ? "Créneau réservé (liste chaude)"
+        : r.targetAppointmentId != null && !r.waitlistEntryId
+          ? "RDV avancé (rebook)"
+          : "Créneau récupéré";
     events.push({
       at: r.claimedAt!.toISOString(),
       type: "rebooked",
-      title: `Créneau récupéré`,
+      title,
       detail: p?.name ?? p?.email ?? null,
     });
   }

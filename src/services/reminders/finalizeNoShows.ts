@@ -8,22 +8,15 @@ const GRACE_MIN = 15;
 export async function finalizeNoShowsAfterGrace(now = new Date()): Promise<{ finalized: number }> {
   const cutoff = new Date(now.getTime() - GRACE_MIN * 60 * 1000);
 
-  const candidates = await prisma.appointment.findMany({
+  /** Une seule requête : évite la course liste d’ids → update qui pouvait écraser un CONFIRMED
+   *  écrit entre-temps (ex. clic Confirmer pendant le cron). */
+  const result = await prisma.appointment.updateMany({
     where: {
       endsAt: { lt: cutoff },
       status: { in: ["PENDING", "AT_RISK", "NO_SHOW_PROBABLE"] },
     },
-    select: { id: true },
-  });
-
-  if (candidates.length === 0) {
-    return { finalized: 0 };
-  }
-
-  await prisma.appointment.updateMany({
-    where: { id: { in: candidates.map((c) => c.id) } },
     data: { status: "NO_SHOW" },
   });
 
-  return { finalized: candidates.length };
+  return { finalized: result.count };
 }

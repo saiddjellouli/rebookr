@@ -13,6 +13,8 @@ export const publicRebookRoutes: FastifyPluginAsync = async (app) => {
       include: {
         freeSlot: true,
         waitlistEntry: { include: { patient: true } },
+        targetAppointment: { include: { patient: true } },
+        targetPatient: true,
       },
     });
 
@@ -55,13 +57,39 @@ export const publicRebookRoutes: FastifyPluginAsync = async (app) => {
         );
     }
 
-    const patient = offer.waitlistEntry.patient;
+    const isWaitlist = Boolean(offer.waitlistEntryId);
+    const isSuccessor = Boolean(offer.targetAppointmentId);
+
+    const patient = isWaitlist
+      ? offer.waitlistEntry!.patient
+      : isSuccessor
+        ? offer.targetAppointment!.patient
+        : offer.targetPatient;
+
     if (!patient?.id) {
       return reply
         .code(400)
         .type("text/html; charset=utf-8")
         .send(htmlPage({ title: "Erreur", message: "Patient introuvable pour cette offre.", ok: false }));
     }
+
+    if (isSuccessor) {
+      const appt = offer.targetAppointment!;
+      if (appt.status !== "CONFIRMED") {
+        return reply
+          .type("text/html; charset=utf-8")
+          .send(
+            htmlPage({
+              title: "Action impossible",
+              message: "Ce rendez-vous n’est plus confirmé ; la proposition de créneau n’est plus valable.",
+              ok: false,
+            }),
+          );
+      }
+    }
+
+    let successMessage =
+      "Le créneau est enregistré. Vous recevrez les prochaines instructions par e-mail si besoin.";
 
     try {
       await prisma.$transaction(async (tx) => {
@@ -87,29 +115,61 @@ export const publicRebookRoutes: FastifyPluginAsync = async (app) => {
           }
         }
 
-        const title =
-          patient.name?.trim() ? `Rendez-vous — ${patient.name.trim()}` : "Rendez-vous (liste d’attente)";
+        if (isWaitlist) {
+          const title =
+            patient.name?.trim() ? `Rendez-vous — ${patient.name.trim()}` : "Rendez-vous (liste d’attente)";
 
-        await tx.appointment.create({
-          data: {
-            organizationId: slot.organizationId,
-            patientId: patient.id,
-            title,
-            startsAt: slot.startsAt,
-            endsAt: slot.endsAt,
-            status: "PENDING",
-            source: "MANUAL",
-          },
-        });
+          await tx.appointment.create({
+            data: {
+              organizationId: slot.organizationId,
+              patientId: patient.id,
+              title,
+              startsAt: slot.startsAt,
+              endsAt: slot.endsAt,
+              status: "PENDING",
+              source: "MANUAL",
+            },
+          });
+
+          await tx.waitlistEntry.update({
+            where: { id: offer.waitlistEntryId! },
+            data: { active: false },
+          });
+          successMessage = "Le créneau est à vous. Vous recevrez un rappel pour le confirmer.";
+        } else if (isSuccessor) {
+          const appt = offer.targetAppointment!;
+          await tx.actionToken.deleteMany({ where: { appointmentId: appt.id } });
+          await tx.appointment.update({
+            where: { id: appt.id },
+            data: {
+              startsAt: slot.startsAt,
+              endsAt: slot.endsAt,
+            },
+          });
+          successMessage =
+            "Votre rendez-vous a été avancé sur ce créneau. Les prochains rappels suivront ce nouvel horaire.";
+        } else {
+          const title =
+            patient.name?.trim() ? `Rendez-vous — ${patient.name.trim()}` : "Rendez-vous (liste chaude)";
+
+          await tx.appointment.create({
+            data: {
+              organizationId: slot.organizationId,
+              patientId: offer.targetPatientId!,
+              title,
+              startsAt: slot.startsAt,
+              endsAt: slot.endsAt,
+              status: "PENDING",
+              source: "MANUAL",
+            },
+          });
+          successMessage =
+            "Le créneau est réservé. Vous recevrez les rappels de confirmation habituels sur ce nouvel horaire.";
+        }
 
         await tx.rebookingOffer.update({
           where: { id: offer.id },
           data: { claimedAt: new Date() },
-        });
-
-        await tx.waitlistEntry.update({
-          where: { id: offer.waitlistEntryId },
-          data: { active: false },
         });
       });
     } catch (e) {
@@ -131,8 +191,8 @@ export const publicRebookRoutes: FastifyPluginAsync = async (app) => {
       .type("text/html; charset=utf-8")
       .send(
         htmlPage({
-          title: "Réservation confirmée",
-          message: "Le créneau est à vous. Vous recevrez un rappel pour le confirmer.",
+          title: "C’est noté",
+          message: successMessage,
           ok: true,
         }),
       );

@@ -1,4 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
+import { recalculateRiskForAppointment } from "../risk/appointmentRisk.js";
 import { notifyWaitlistForFreeSlot } from "./notifyWaitlist.js";
 
 const RELEASABLE = new Set(["PENDING", "CONFIRMED", "AT_RISK", "NO_SHOW_PROBABLE"]);
@@ -35,14 +36,14 @@ export async function markAppointmentNoShowAndReleaseSlot(params: {
     if (existingSlot) {
       await tx.appointment.update({
         where: { id: apt.id },
-        data: { status: "NO_SHOW" },
+        data: { status: "NO_SHOW", planningLastUpdateSource: "SYSTEM" },
       });
       return existingSlot.id;
     }
 
     await tx.appointment.update({
       where: { id: apt.id },
-      data: { status: "NO_SHOW" },
+      data: { status: "NO_SHOW", planningLastUpdateSource: "SYSTEM" },
     });
 
     const created = await tx.freeSlot.create({
@@ -59,6 +60,8 @@ export async function markAppointmentNoShowAndReleaseSlot(params: {
   notifyWaitlistForFreeSlot(freeSlotId).catch((err) => {
     console.error("[markAppointmentNoShowAndReleaseSlot] notifyWaitlistForFreeSlot", err);
   });
+
+  await recalculateRiskForAppointment(apt.id);
 
   return { ok: true, freeSlotId };
 }

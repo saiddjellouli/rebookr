@@ -2,6 +2,7 @@ import type { AppointmentSource } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import { parseAppointmentStart, parseDurationMinutes } from "../csv/parseSchedule.js";
+import { refreshPoolHasFutureAppointment } from "../pool/patientPool.js";
 
 const MAX_ROWS = 2000;
 
@@ -131,6 +132,7 @@ export async function persistAppointmentImportRows(params: {
 
   const importBatchId = params.importBatchId ?? randomUUID();
   const patientCache = new Map<string, string>();
+  const touchedPatientIds = new Set<string>();
   let created = 0;
   let skipped = 0;
   const errors: { line: number; message: string }[] = [];
@@ -209,6 +211,10 @@ export async function persistAppointmentImportRows(params: {
         message: e instanceof Error ? e.message : "Erreur à l’enregistrement",
       });
     }
+  }
+
+  for (const patientId of touchedPatientIds) {
+    await refreshPoolHasFutureAppointment(patientId, org.id);
   }
 
   return {

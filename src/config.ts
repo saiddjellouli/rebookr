@@ -31,8 +31,21 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   /// Optionnel : webhook POST (WhatsApp / vocal) — JSON { channel, phone, message, appointmentId }
   REMINDER_WEBHOOK_URL: z.string().url().optional(),
+  /// Rebook : `legacy` = waitlist + successeurs ; `hot_first` = pool isHot puis legacy ; `hot_only` = pool isHot seulement
+  REBOOK_NOTIFY_MODE: z.enum(["legacy", "hot_first", "hot_only"]).default("hot_first"),
+  /// Durée (h) du statut « prioritaire » (pool isHot) après clic sur l’invite HOT_PRIORITY
+  POOL_HOT_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  /// Durée (j) de validité d’une invitation WANTS_EARLIER_SLOT envoyée pour gonfler le pool
+  POOL_WANTS_INVITE_TTL_DAYS: z.coerce.number().int().min(1).max(180).default(30),
 });
 
 export type Env = z.infer<typeof envSchema>;
 
 export const env: Env = envSchema.parse(process.env);
+
+/** Routes `/demo/*` : actives en dev/test, ou en prod si `DEMO_API_ENABLED=true`. */
+export function isDemoApiEnabled(): boolean {
+  if (env.NODE_ENV === "development" || env.NODE_ENV === "test") return true;
+  const v = process.env.DEMO_API_ENABLED;
+  return v === "true" || v === "1";
+}
